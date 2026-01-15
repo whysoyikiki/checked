@@ -175,34 +175,42 @@ if uploaded_file and start_monday:
     )
 
     # ------------------------
-    # 간략 요약표
-    # ------------------------
-    st.subheader("🟢🔴 간략 주간 요약표")
-    summary_rows = []
+# 간략 요약표 (시간-분 형식)
+# ------------------------
+st.subheader("🟢🔴 간략 주간 요약표")
+summary_rows = []
 
-    for week_start, days in sorted(weekly_data.items()):
-        row = {}
-        total_week_minutes = 0
-        for d in ["월", "화", "수", "목", "금"]:
-            worked = days.get(d)
-            if worked is None:
-                row[d] = ""
-            else:
-                row[d] = worked
-                total_week_minutes += worked
-        row["주간합계"] = total_week_minutes
-        summary_rows.append((week_start, row))
+for week_start, days in sorted(weekly_data.items()):
+    row = {}
+    total_week_minutes = 0
+    for d in ["월", "화", "수", "목", "금"]:
+        worked = days.get(d)
+        if worked is None:
+            row[d] = ""
+        else:
+            # 시간·분 형식으로 변환
+            minutes_diff = worked - DAILY_STANDARD_MIN
+            sign = "+" if minutes_diff >= 0 else "-"
+            minutes_abs = abs(minutes_diff)
+            row[d] = f"{sign}{minutes_abs//60}시간 {minutes_abs%60}분"
+            total_week_minutes += worked  # 주간합계는 실제 근무분 합계
+    # 주간합계도 시간·분으로 표시
+    sign = "+" if (total_week_minutes - DAILY_STANDARD_MIN * len([v for v in days.values() if v is not None])) >= 0 else "-"
+    total_diff = total_week_minutes - DAILY_STANDARD_MIN * len([v for v in days.values() if v is not None])
+    total_diff_abs = abs(total_diff)
+    row["주간합계"] = f"{sign}{total_diff_abs//60}시간 {total_diff_abs%60}분"
+    summary_rows.append((week_start, row))
 
-    if summary_rows:
-        summary_df = pd.DataFrame([r[1] for r in summary_rows])
-        summary_df.index = [r[0].strftime("%Y-%m-%d") for r in summary_rows]
+if summary_rows:
+    summary_df = pd.DataFrame([r[1] for r in summary_rows])
+    summary_df.index = [r[0].strftime("%Y-%m-%d") for r in summary_rows]
 
-        def color_cells(val):
-            if val == "":
-                return "background-color:white"
-            elif val >= DAILY_STANDARD_MIN:
-                return "background-color:lightgreen"
-            else:
-                return "background-color:salmon"
+    def color_cells(val):
+        if val == "":
+            return "background-color:white"
+        elif val.startswith("+"):
+            return "background-color:lightgreen"
+        else:
+            return "background-color:salmon"
 
-        st.dataframe(summary_df.style.applymap(color_cells), use_container_width=True)
+    st.dataframe(summary_df.style.applymap(color_cells), use_container_width=True)
