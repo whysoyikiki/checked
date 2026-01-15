@@ -4,164 +4,212 @@ import re
 from datetime import datetime, timedelta
 from io import BytesIO
 
-st.set_page_config(page_title="카카오톡 출퇴근 분석", layout="wide")
-
+st.set_page_config(layout="wide")
 st.title("📊 카카오톡 출퇴근 기록 분석")
 
-uploaded_file = st.file_uploader("📁 카카오톡 TXT 파일 업로드", type=["txt"])
-start_monday = st.text_input("📅 시작 날짜 (월요일, yyyymmdd)", placeholder="20251006")
+# =========================
+# 사용자 입력
+# =========================
+uploaded_file = st.file_uploader("카카오톡 txt 파일 업로드", type="txt")
+target_name = st.text_input("분석 대상 이름 (예: NEB 김기범 대리님)")
+start_monday = st.text_input("시작 월요일 (YYYYMMDD)")
 
-DAILY_STANDARD_MIN = 9 * 60
+if not uploaded_file or not target_name or not start_monday:
+    st.stop()
 
-date_pattern = re.compile(
-    r"-{5,}\s(\d{4})년\s(\d{1,2})월\s(\d{1,2})일\s([월화수목금토일])요일"
-)
+start_date = datetime.strptime(start_monday, "%Y%m%d").date()
+end_date = datetime.today().date()
 
-msg_pattern = re.compile(
-    r"^\[(?P<name>[^\]]+)\]\s+\[(?P<ampm>오전|오후)\s(?P<hour>\d{1,2}):(?P<minute>\d{2})\]"
-)
+# =========================
+# 유틸 함수
+# =========================
+def parse_time(ampm, h, m):
+    h = int(h)
+    m = int(m)
+    if ampm == "오후" and h != 12:
+        h += 12
+    if ampm == "오전" and h == 12:
+        h = 0
+    return h, m
 
-def format_diff(minutes):
-    sign = "+" if minutes >= 0 else "-"
-    minutes = abs(minutes)
-    return f"{sign}{minutes//60}시간 {minutes%60}분"
+def format_diff(mins):
+    sign = "+" if mins >= 0 else "-"
+    mins = abs(mins)
+    return f"{sign}{mins//60}시간 {mins%60}분"
 
-if uploaded_file and start_monday:
-    try:
-        start_date = datetime.strptime(start_monday, "%Y%m%d").date()
-        end_date = datetime.now().date()
-    except:
-        st.error("❌ 날짜 형식이 잘못되었습니다 (yyyymmdd)")
-        st.stop()
+# =========================
+# TXT 파싱
+# =========================
+lines = uploaded_file.read().decode("utf-8").splitlines()
 
-    lines = uploaded_file.read().decode("utf-8").splitlines()
+date_pattern = re.compile(r"-+\s*(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일\s*(월|화|수|목|금|토|일)요일")
+msg_pattern = re.compile(r"\[(.*?)\]\s*\[(오전|오후)\s*(\d+):(\d+)\]")
 
-    records = []
-    current_date, current_weekday = None, None
+records = []
+current_date = None
+current_weekday = None
 
-    for line in lines:
-        line = line.strip()
+for line in lines:
+    date_match = date_pattern.search(line)
+    if date_match:
+        y, m, d, wd = date_match.groups()
+        current_date = datetime(int(y), int(m), int(d)).date()
+        current_weekday = wd
+        continue
 
-        d = date_pattern.match(line)
-        if d:
-            current_date = datetime(
-                int(d.group(1)), int(d.group(2)), int(d.group(3))
-            ).date()
-            current_weekday = d.group(4)
-            continue
+    if not current_date or not (start_date <= current_date <= end_date):
+        continue
 
-        if not current_date:
-            continue
-        if not (start_date <= current_date <= end_date):
-            continue
-        if current_weekday not in ["월", "화", "수", "목", "금"]:
-            continue
+    msg_match = msg_pattern.search(line)
+    if not msg_match:
+        continue
 
-        m = msg_pattern.match(line)
-        if not m:
-            continue
+    name, ampm, h, m = msg_match.groups()
+    if name != target_name:
+        continue
 
-        hour = int(m.group("hour"))
-        minute = int(m.group("minute"))
+    hour, minute = parse_time(ampm, h, m)
 
-        if m.group("ampm") == "오후" and hour != 12:
-            hour += 12
-        if m.group("ampm") == "오전" and hour == 12:
-            hour = 0
+    records.append({
+        "이름": name,
+        "날짜": current_date,
+        "요일": current_weekday,
+        "hour": hour,
+        "minute": minute
+    })
 
-        records.append({
-            "이름": m.group("name"),
-            "날짜": current_date,
-            "요일": current_weekday,
-            "시간": datetime.combine(current_date, datetime.min.time()) +
-                    timedelta(hours=hour, minutes=minute)
-        })
+df = pd.DataFrame(records)
+if df.empty:
+    st.warning("해당 기간에 데이터가 없습니다.")
+    st.stop()
 
-    df = pd.DataFrame(records)
+# =========================
+# 일자별 출퇴근 계산
+# =========================
+rows = []
+weekly_minutes = 0
+current_week = None
 
-    if df.empty:
-        st.warning("데이터를 찾을 수 없습니다.")
-        st.stop()
+for date, g in df.groupby("날짜"):
+    g = g.sort_values(["hour", "minute"])
+    weekday = g.iloc[0]["요일"]
 
-    names = sorted(df["이름"].unique())
-    target_name = st.selectbox("👤 분석 대상자 선택", names)
+    start = g.iloc[0]
+    end = g.iloc[-1] if len(g) > 1 else None
 
-    df = df[df["이름"] == target_name]
+    start_dt = datetime.combine(date, datetime.min.time()) + timedelta(
+        hours=int(start["hour"]), minutes=int(start["minute"])
+    )
 
-    rows = []
-    week_start = None
-    week_worked = 0
-    week_days = 0
+    end_dt = None
+    diff_min = None
 
-    for date, g in df.groupby("날짜"):
-        g = g.sort_values("시간")
-        current_week_start = date - timedelta(days=date.weekday())
+    if end is not None:
+        end_dt = datetime.combine(date, datetime.min.time()) + timedelta(
+            hours=int(end["hour"]), minutes=int(end["minute"])
+        )
+        diff_min = int((end_dt - start_dt).total_seconds() // 60) - 540
 
-        if week_start and current_week_start != week_start:
-            rows.append({
-                "이름": "주간합계",
-                "날짜": "",
-                "요일": "",
-                "출근": "",
-                "퇴근": "",
-                "시간": "",
-                "주간합계": format_diff(week_worked - week_days * DAILY_STANDARD_MIN)
-            })
-            week_worked = 0
-            week_days = 0
+    week_id = date - timedelta(days=date.weekday())
 
-        if len(g) >= 2:
-            start = g.iloc[0]["시간"]
-            end = g.iloc[-1]["시간"]
-            worked = int((end - start).total_seconds() // 60)
+    if current_week is None:
+        current_week = week_id
 
-            rows.append({
-                "이름": target_name,
-                "날짜": date.strftime("%Y-%m-%d"),
-                "요일": g.iloc[0]["요일"],
-                "출근": start.strftime("%H:%M"),
-                "퇴근": end.strftime("%H:%M"),
-                "시간": format_diff(worked - DAILY_STANDARD_MIN),
-                "주간합계": ""
-            })
-
-            week_worked += worked
-            week_days += 1
-        else:
-            only_time = g.iloc[0]["시간"]
-            rows.append({
-                "이름": target_name,
-                "날짜": date.strftime("%Y-%m-%d"),
-                "요일": g.iloc[0]["요일"],
-                "출근": only_time.strftime("%H:%M"),
-                "퇴근": "",
-                "시간": "퇴근 기록 없음",
-                "주간합계": ""
-            })
-
-        week_start = current_week_start
-
-    if week_days > 0:
+    if week_id != current_week:
         rows.append({
-            "이름": "주간합계",
+            "이름": "",
             "날짜": "",
-            "요일": "",
+            "요일": "주간합계",
             "출근": "",
             "퇴근": "",
             "시간": "",
-            "주간합계": format_diff(week_worked - week_days * DAILY_STANDARD_MIN)
+            "주간합계": format_diff(weekly_minutes)
         })
+        weekly_minutes = 0
+        current_week = week_id
 
-    result_df = pd.DataFrame(rows)
+    if diff_min is not None:
+        weekly_minutes += diff_min + 540
 
-    st.subheader("📋 분석 결과")
-    st.dataframe(result_df, use_container_width=True)
+    rows.append({
+        "이름": target_name,
+        "날짜": date.strftime("%Y-%m-%d"),
+        "요일": weekday,
+        "출근": start_dt.strftime("%H:%M"),
+        "퇴근": end_dt.strftime("%H:%M") if end_dt else "",
+        "시간": format_diff(diff_min) if diff_min is not None else "",
+        "주간합계": ""
+    })
 
-    buffer = BytesIO()
-    result_df.to_excel(buffer, index=False)
-    st.download_button(
-        "⬇ 엑셀 다운로드",
-        data=buffer.getvalue(),
-        file_name="출퇴근_기록.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+rows.append({
+    "이름": "",
+    "날짜": "",
+    "요일": "주간합계",
+    "출근": "",
+    "퇴근": "",
+    "시간": "",
+    "주간합계": format_diff(weekly_minutes)
+})
+
+result_df = pd.DataFrame(rows)
+
+# =========================
+# 스타일 함수
+# =========================
+def highlight_weekly(val):
+    if isinstance(val, str) and val.startswith("-"):
+        return "background-color: #ffcccc"
+    return ""
+
+def summary_color(val):
+    if isinstance(val, str):
+        if val.startswith("+"):
+            return "background-color: #ccffcc"
+        if val.startswith("-"):
+            return "background-color: #ffcccc"
+    return ""
+
+# =========================
+# 상세 테이블 출력
+# =========================
+st.subheader("📋 상세 기록")
+
+styled = result_df.style.applymap(
+    highlight_weekly,
+    subset=["주간합계"]
+)
+
+st.dataframe(styled, use_container_width=True)
+
+# =========================
+# 요약 테이블
+# =========================
+st.subheader("📊 주간 요약")
+
+weekdays = ["월", "화", "수", "목", "금"]
+summary = {d: "" for d in weekdays}
+weekly_sum = ""
+
+for _, r in result_df.iterrows():
+    if r["요일"] == "주간합계":
+        weekly_sum = r["주간합계"]
+    elif r["요일"] in weekdays:
+        summary[r["요일"]] = r["시간"]
+
+summary["주간합계"] = weekly_sum
+summary_df = pd.DataFrame([summary])
+
+st.dataframe(summary_df.style.applymap(summary_color), use_container_width=True)
+
+# =========================
+# 엑셀 다운로드
+# =========================
+buffer = BytesIO()
+result_df.to_excel(buffer, index=False)
+
+st.download_button(
+    "⬇ 엑셀 다운로드",
+    data=buffer.getvalue(),
+    file_name="출퇴근_분석.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
