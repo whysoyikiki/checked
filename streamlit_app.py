@@ -26,6 +26,9 @@ def format_diff(minutes):
     minutes = abs(minutes)
     return f"{sign}{minutes//60}시간 {minutes%60}분"
 
+# ------------------------
+# 1. 데이터 처리
+# ------------------------
 if uploaded_file and start_monday:
     try:
         start_date = datetime.strptime(start_monday, "%Y%m%d").date()
@@ -83,17 +86,21 @@ if uploaded_file and start_monday:
         st.warning("데이터를 찾을 수 없습니다.")
         st.stop()
 
+    # ------------------------
+    # 2. 대상자 선택
+    # ------------------------
     names = sorted(df["이름"].unique())
     target_name = st.selectbox("👤 분석 대상자 선택", names)
-
     df = df[df["이름"] == target_name]
 
+    # ------------------------
+    # 3. 상세 분석 데이터 생성
+    # ------------------------
     rows = []
     week_start = None
     week_worked = 0
     week_days = 0
 
-    # 주간 단위 기록
     weekly_data = {}
 
     for date, g in df.groupby("날짜"):
@@ -131,7 +138,6 @@ if uploaded_file and start_monday:
             week_worked += worked
             week_days += 1
 
-            # 요약표용
             weekly_data.setdefault(current_week_start, {})[g.iloc[0]["요일"]] = worked
         else:
             only_time = g.iloc[0]["시간"]
@@ -144,7 +150,6 @@ if uploaded_file and start_monday:
                 "시간": "퇴근 기록 없음",
                 "주간합계": ""
             })
-            # 요약표용: 기록 없음
             weekly_data.setdefault(current_week_start, {})[g.iloc[0]["요일"]] = None
 
         week_start = current_week_start
@@ -162,7 +167,10 @@ if uploaded_file and start_monday:
 
     result_df = pd.DataFrame(rows)
 
-    st.subheader("📋 분석 결과")
+    # ------------------------
+    # 4. 전체 상세 결과 표시 + 다운로드
+    # ------------------------
+    st.subheader("📋 전체 상세 분석 결과")
     st.dataframe(result_df, use_container_width=True)
 
     buffer = BytesIO()
@@ -175,42 +183,53 @@ if uploaded_file and start_monday:
     )
 
     # ------------------------
-# 간략 요약표 (시간-분 형식)
-# ------------------------
-st.subheader("🟢🔴 간략 주간 요약표")
-summary_rows = []
+    # 5. 간략 주간 요약표
+    # ------------------------
+    st.subheader("🟢🔴 간략 주간 요약표")
+    summary_rows = []
 
-for week_start, days in sorted(weekly_data.items()):
-    row = {}
-    total_week_minutes = 0
-    for d in ["월", "화", "수", "목", "금"]:
-        worked = days.get(d)
-        if worked is None:
-            row[d] = ""
-        else:
-            # 시간·분 형식으로 변환
-            minutes_diff = worked - DAILY_STANDARD_MIN
-            sign = "+" if minutes_diff >= 0 else "-"
-            minutes_abs = abs(minutes_diff)
-            row[d] = f"{sign}{minutes_abs//60}시간 {minutes_abs%60}분"
-            total_week_minutes += worked  # 주간합계는 실제 근무분 합계
-    # 주간합계도 시간·분으로 표시
-    sign = "+" if (total_week_minutes - DAILY_STANDARD_MIN * len([v for v in days.values() if v is not None])) >= 0 else "-"
-    total_diff = total_week_minutes - DAILY_STANDARD_MIN * len([v for v in days.values() if v is not None])
-    total_diff_abs = abs(total_diff)
-    row["주간합계"] = f"{sign}{total_diff_abs//60}시간 {total_diff_abs%60}분"
-    summary_rows.append((week_start, row))
+    for week_start, days in sorted(weekly_data.items()):
+        row = {}
+        total_week_minutes = 0
+        for d in ["월", "화", "수", "목", "금"]:
+            worked = days.get(d)
+            if worked is None:
+                row[d] = ""
+            else:
+                minutes_diff = worked - DAILY_STANDARD_MIN
+                sign = "+" if minutes_diff >= 0 else "-"
+                minutes_abs = abs(minutes_diff)
+                row[d] = f"{sign}{minutes_abs//60}시간 {minutes_abs%60}분"
+                total_week_minutes += worked
+        total_diff = total_week_minutes - DAILY_STANDARD_MIN * len([v for v in days.values() if v is not None])
+        sign = "+" if total_diff >= 0 else "-"
+        total_diff_abs = abs(total_diff)
+        row["주간합계"] = f"{sign}{total_diff_abs//60}시간 {total_diff_abs%60}분"
+        summary_rows.append((week_start, row))
 
-if summary_rows:
-    summary_df = pd.DataFrame([r[1] for r in summary_rows])
-    summary_df.index = [r[0].strftime("%Y-%m-%d") for r in summary_rows]
+    if summary_rows:
+        summary_df = pd.DataFrame([r[1] for r in summary_rows])
+        summary_df.index = [r[0].strftime("%Y-%m-%d") for r in summary_rows]
 
-    def color_cells(val):
-        if val == "":
-            return "background-color:white"
-        elif val.startswith("+"):
-            return "background-color:lightgreen"
-        else:
-            return "background-color:salmon"
+        def color_cells(val):
+            if val == "":
+                return "background-color:white"
+            elif val.startswith("+"):
+                return "background-color:lightgreen"
+            else:
+                return "background-color:salmon"
 
-    st.dataframe(summary_df.style.applymap(color_cells), use_container_width=True)
+        st.dataframe(summary_df.style.applymap(color_cells), use_container_width=True)
+
+        # ------------------------
+        # 6. 주간 버튼 클릭 시 상세 표시
+        # ------------------------
+        st.subheader("📌 주간 상세 기록 보기")
+        for week_start, row_data in summary_rows:
+            week_str = week_start.strftime("%Y-%m-%d")
+            if st.button(f"{week_str} 주간 보기"):
+                filtered = result_df[result_df['날짜'].between(
+                    week_start.strftime("%Y-%m-%d"),
+                    (week_start + timedelta(days=4)).strftime("%Y-%m-%d")
+                )]
+                st.dataframe(filtered, use_container_width=True)
