@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 from IPython.display import display, HTML
 
-# =========================
+# ========================
 # 1. 카카오톡 로그 경로
 # =========================
 FILE_PATH = "/content/kakao.txt"
